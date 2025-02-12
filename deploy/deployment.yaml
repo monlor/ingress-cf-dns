@@ -1,0 +1,86 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ingress-cf-dns
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ingress-cf-dns
+rules:
+- apiGroups: [""]
+  resources: ["pods", "nodes"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["ingresses"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ingress-cf-dns
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ingress-cf-dns
+subjects:
+- kind: ServiceAccount
+  name: ingress-cf-dns
+  namespace: kube-system
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ingress-cf-dns
+  namespace: kube-system
+type: Opaque
+data:
+  cf-token: ${BASE64_ENCODED_CF_TOKEN}
+  cf-zone-id: ${BASE64_ENCODED_CF_ZONE_ID}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingress-cf-dns
+  namespace: kube-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ingress-cf-dns
+  template:
+    metadata:
+      labels:
+        app: ingress-cf-dns
+    spec:
+      serviceAccountName: ingress-cf-dns
+      containers:
+      - name: controller
+        image: ghcr.io/monlor/ingress-cf-dns:main
+        env:
+        # Required: Cloudflare configuration
+        - name: CF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: ingress-cf-dns
+              key: cf-token
+        - name: CF_ZONE_ID
+          valueFrom:
+            secretKeyRef:
+              name: ingress-cf-dns
+              key: cf-zone-id
+        
+        # Optional: Controller configuration
+        - name: SYNC_INTERVAL_SECONDS
+          value: "300s"
+        - name: NODE_PUBLIC_IP_ANNOTATION
+          value: "node.kubernetes.io/public-ip"
+        
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi 
