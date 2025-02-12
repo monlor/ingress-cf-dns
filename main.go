@@ -299,6 +299,14 @@ func (c *Controller) updateDNSRecord(host, publicIP string) {
     if len(records.Result) > 0 {
         // Check if update is needed
         record := records.Result[0]
+
+        // Check if record is managed by another controller
+        if strings.HasPrefix(strings.ToLower(record.Comment), "managed by") && record.Comment != config.DNSRecordComment {
+            log.Printf("Warning: DNS record for %s is managed by another controller (comment: %s), skipping update", 
+                host, record.Comment)
+            return
+        }
+
         if record.Content == publicIP {
             log.Printf("DNS record for %s already points to %s in zone ID %s, skipping update", host, publicIP, zoneID)
             return
@@ -312,6 +320,7 @@ func (c *Controller) updateDNSRecord(host, publicIP string) {
                 Type:    cloudflare.F(dns.ARecordTypeA),
                 Content: cloudflare.F(publicIP),
                 TTL:     cloudflare.F(dns.TTL1),
+                Comment: cloudflare.F(config.DNSRecordComment),
             },
         }
         _, err = c.cfAPI.DNS.Records.Update(ctx, record.ID, updateParams)
@@ -332,6 +341,7 @@ func (c *Controller) updateDNSRecord(host, publicIP string) {
                 Content: cloudflare.F(publicIP),
                 Proxied: cloudflare.F(c.config.DNSProxied),
                 TTL:     cloudflare.F(dns.TTL1),
+                Comment: cloudflare.F(config.DNSRecordComment),
             },
         }
         _, err = c.cfAPI.DNS.Records.New(ctx, newParams)

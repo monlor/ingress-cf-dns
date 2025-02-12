@@ -29,6 +29,10 @@ type Config struct {
     domainPattern *regexp.Regexp
 }
 
+const (
+    DNSRecordComment = "managed by Ingress-CF-DNS"
+)
+
 // LoadConfig loads configuration from environment variables
 func LoadConfig() (*Config, error) {
     cfg := &Config{}
