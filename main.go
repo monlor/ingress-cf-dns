@@ -319,6 +319,8 @@ func (c *Controller) updateDNSRecord(host, publicIP string) {
                 Name:    cloudflare.F(host),
                 Type:    cloudflare.F(dns.ARecordTypeA),
                 Content: cloudflare.F(publicIP),
+                // keep proxied status
+                Proxied: cloudflare.F(record.Proxied),
                 TTL:     cloudflare.F(dns.TTL1),
                 Comment: cloudflare.F(config.DNSRecordComment),
             },
