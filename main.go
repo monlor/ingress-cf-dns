@@ -120,7 +120,7 @@ func (c *Controller) syncAll() {
 func (c *Controller) processIngress(ing *networkingv1.Ingress) {
     // Map to track host to backend mapping
     hostBackends := make(map[string]string) // host -> backend service name
-    backendHosts := make(map[string]string) // backend service name -> host
+    backendHosts := make(map[string][]string) // backend service name -> hosts
 
     // First pass: collect and validate host-backend mappings
     for _, rule := range ing.Spec.Rules {
@@ -152,20 +152,13 @@ func (c *Controller) processIngress(ing *networkingv1.Ingress) {
             continue
         }
 
-        // Check if this backend already has a different host
-        if existingHost, exists := backendHosts[backendName]; exists {
-            log.Printf("Warning: Backend %s already mapped to host %s, skipping new host %s", 
-                backendName, existingHost, rule.Host)
-            continue
-        }
-
         // Store the valid mapping
         hostBackends[rule.Host] = backendName
-        backendHosts[backendName] = rule.Host
+        backendHosts[backendName] = append(backendHosts[backendName], rule.Host)
     }
 
     // Process valid host-backend pairs
-    for host, backendName := range hostBackends {
+    for backendName, hosts := range backendHosts {
         // Get service
         svc, err := c.kubeClient.CoreV1().Services(ing.Namespace).Get(
             context.Background(),
@@ -217,8 +210,10 @@ func (c *Controller) processIngress(ing *networkingv1.Ingress) {
             continue
         }
 
-        // Update DNS record
-        c.updateDNSRecord(host, publicIP)
+        // Update DNS records for all hosts of this backend
+        for _, host := range hosts {
+            c.updateDNSRecord(host, publicIP)
+        }
     }
 }
 
