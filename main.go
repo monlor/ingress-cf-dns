@@ -287,7 +287,7 @@ func (c *Controller) updateDNSRecord(host, publicIP string) {
         Name: cloudflare.F(dns.RecordListParamsName{
             Exact: cloudflare.F(host),
         }),
-        Type: cloudflare.F(dns.RecordListParamsTypeA),
+        // Type: cloudflare.F(dns.RecordListParamsTypeA),
     }
     
     records, err := c.cfAPI.DNS.Records.List(ctx, listParams)
