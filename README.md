@@ -5,10 +5,15 @@ A Kubernetes controller that automatically updates Cloudflare DNS records to poi
 ## ✨ Features
 
 🔄 **Auto Sync**: Automatically synchronizes Ingress DNS records with node public IPs
+
 🎯 **Flexible Filtering**: Support regex patterns to filter namespaces and domains
+
 🔒 **Cloudflare Proxy**: Optional Cloudflare proxy (orange cloud) support
+
 ⚡️ **Real-time Updates**: Only updates DNS records when IP changes
+
 🎮 **Easy Configuration**: Simple configuration through environment variables
+
 🔍 **Smart Selection**: Intelligent pod and service selection for DNS routing
 
 ## Prerequisites
