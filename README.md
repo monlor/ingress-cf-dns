@@ -29,7 +29,6 @@ The controller is configured using environment variables:
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
 | CF_TOKEN | Cloudflare API token | - | Yes |
-| CF_ZONE_ID | Cloudflare Zone ID | - | Yes |
 | SYNC_INTERVAL_SECONDS | Interval between DNS sync operations | 300s | No |
 | NODE_PUBLIC_IP_ANNOTATION | Node annotation key for public IP | node.kubernetes.io/public-ip | No |
 | KUBECONFIG | Path to kubeconfig file | - | No |
@@ -70,14 +69,12 @@ docker build -t ghcr.io/monlor/ingress-cf-dns:main .
 First, encode your Cloudflare credentials:
 ```bash
 echo -n "your-cloudflare-api-token" | base64
-echo -n "your-cloudflare-zone-id" | base64
 ```
 
 Update the Secret in `deploy/deployment.yaml` with your base64-encoded credentials:
 ```yaml
 data:
   cf-token: <base64-encoded-token>
-  cf-zone-id: <base64-encoded-zone-id>
 ```
 
 3. Apply the Kubernetes manifests:
