@@ -5,6 +5,7 @@ go 1.21
 require (
 	github.com/caarlos0/env/v10 v10.0.0
 	github.com/cloudflare/cloudflare-go/v4 v4.1.0
+	github.com/dlclark/regexp2 v1.11.0
 	k8s.io/api v0.29.2
 	k8s.io/apimachinery v0.29.2
 	k8s.io/client-go v0.29.2
