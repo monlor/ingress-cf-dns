@@ -1,0 +1,18 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# Configuration Guide
+
+The controller is configured through environment variables defined in [deploy/deployment.yaml](mdc:deploy/deployment.yaml). Key configuration options:
+
+- `CF_TOKEN` - Cloudflare API token (required)
+- `SYNC_INTERVAL_SECONDS` - DNS sync interval (default: 300s)
+- `NODE_PUBLIC_IP_ANNOTATION` - Node annotation key for public IP
+- `DNS_PROXIED` - Enable/disable Cloudflare proxy
+- `NAMESPACE_REGEX` - Namespace filter pattern
+- `DOMAIN_REGEX` - Domain filter pattern
+
+Node Configuration:
+Each node must have the `node.kubernetes.io/public-ip` annotation set with its public IP address.

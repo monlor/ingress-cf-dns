@@ -1,0 +1,29 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# Development Guide
+
+## Project Structure
+- [main.go](mdc:main.go) - Contains the controller logic and Kubernetes client setup
+- [config/](mdc:config) - Configuration related code and templates
+- [deploy/](mdc:deploy) - Kubernetes deployment manifests
+
+## Building and Testing
+1. Build the container:
+   ```bash
+   docker build -t ghcr.io/monlor/ingress-cf-dns:main .
+   ```
+
+2. Deploy to Kubernetes:
+   ```bash
+   kubectl apply -f deploy/deployment.yaml
+   ```
+
+## Key Functions
+The main reconciliation loop in [main.go](mdc:main.go) handles:
+- Watching Ingress resources
+- Finding backend services and pods
+- Getting node public IPs
+- Updating Cloudflare DNS records

@@ -1,0 +1,15 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# Project Overview
+
+This is a Kubernetes controller that automatically updates Cloudflare DNS records based on node IPs. Here are the key components:
+
+- [main.go](mdc:main.go) - The main controller logic and reconciliation loop
+- [go.mod](mdc:go.mod) - Project dependencies and module definition
+- [Dockerfile](mdc:Dockerfile) - Container image build instructions
+- [deploy/deployment.yaml](mdc:deploy/deployment.yaml) - Kubernetes deployment manifests
+
+The controller watches Ingress resources and updates Cloudflare DNS records to point to the node's public IP where the ingress backend service's first pod is running.
