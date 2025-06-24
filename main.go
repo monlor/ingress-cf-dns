@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,6 +22,8 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+
+	logrus "github.com/sirupsen/logrus"
 )
 
 type Controller struct {
@@ -33,10 +34,16 @@ type Controller struct {
 }
 
 func main() {
+	// 初始化logrus
+	logrus.SetFormatter(&logrus.TextFormatter{
+		FullTimestamp: true,
+	})
+	logrus.SetLevel(logrus.InfoLevel)
+
 	// Load configuration
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		log.Fatalf("Error loading configuration: %s", err.Error())
+		logrus.Fatalf("Error loading configuration: %s", err.Error())
 	}
 
 	// Create kubernetes client
@@ -45,26 +52,26 @@ func main() {
 	// Try to use kubeconfig from user's home directory
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		log.Fatalf("Error getting user home directory: %s", err.Error())
+		logrus.Fatalf("Error getting user home directory: %s", err.Error())
 	}
 	kubeconfigPath := filepath.Join(homeDir, ".kube", "config")
 	if _, err := os.Stat(kubeconfigPath); err == nil {
 		// Use kubeconfig file from home directory
 		config, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
 		if err != nil {
-			log.Fatalf("Error building kubeconfig: %s", err.Error())
+			logrus.Fatalf("Error building kubeconfig: %s", err.Error())
 		}
 		kubeClient, err = kubernetes.NewForConfig(config)
 	} else {
 		// Use in-cluster config
 		config, err := rest.InClusterConfig()
 		if err != nil {
-			log.Fatalf("Error getting in-cluster config: %s", err.Error())
+			logrus.Fatalf("Error getting in-cluster config: %s", err.Error())
 		}
 		kubeClient, err = kubernetes.NewForConfig(config)
 
 		if err != nil {
-			log.Fatalf("Error building kubernetes client: %s", err.Error())
+			logrus.Fatalf("Error building kubernetes client: %s", err.Error())
 		}
 	}
 
@@ -84,7 +91,7 @@ func main() {
 }
 
 func (c *Controller) Run() {
-	log.Printf("Starting controller with sync interval: %v", c.config.SyncInterval)
+	logrus.Infof("Starting controller with sync interval: %v", c.config.SyncInterval)
 
 	c.stopCh = make(chan struct{})
 
@@ -108,12 +115,12 @@ func (c *Controller) Run() {
 }
 
 func (c *Controller) syncAll() {
-	log.Println("Starting sync...")
+	logrus.Debug("Starting sync...")
 
 	// Get all ingresses from all namespaces
 	ingresses, err := c.kubeClient.NetworkingV1().Ingresses("").List(context.Background(), metav1.ListOptions{})
 	if err != nil {
-		log.Printf("Error listing ingresses: %s", err.Error())
+		logrus.Errorf("Error listing ingresses: %s", err.Error())
 		return
 	}
 
@@ -121,21 +128,21 @@ func (c *Controller) syncAll() {
 	for _, ing := range ingresses.Items {
 		// Skip if namespace is not allowed
 		if !c.config.IsNamespaceAllowed(ing.Namespace) {
-			log.Printf("Skipping ingress %s/%s: namespace not allowed by pattern %s",
+			logrus.Debugf("Skipping ingress %s/%s: namespace not allowed by pattern %s",
 				ing.Namespace, ing.Name, c.config.NamespaceRegex)
 			continue
 		}
 		c.processIngressWithRetry(&ing)
 	}
 
-	log.Println("Sync completed")
+	logrus.Debug("Sync completed")
 }
 
 func (c *Controller) watchIngresses() {
 	for {
 		watcher, err := c.kubeClient.NetworkingV1().Ingresses("").Watch(context.Background(), metav1.ListOptions{})
 		if err != nil {
-			log.Printf("Error watching ingresses: %s", err.Error())
+			logrus.Errorf("Error watching ingresses: %s", err.Error())
 			time.Sleep(5 * time.Second)
 			continue
 		}
@@ -162,7 +169,7 @@ func (c *Controller) watchIngresses() {
 func (c *Controller) processIngressWithRetry(ing *networkingv1.Ingress) {
 	// Skip if namespace is not allowed
 	if !c.config.IsNamespaceAllowed(ing.Namespace) {
-		log.Printf("Skipping ingress %s/%s: namespace not allowed by pattern %s",
+		logrus.Warnf("Skipping ingress %s/%s: namespace not allowed by pattern %s",
 			ing.Namespace, ing.Name, c.config.NamespaceRegex)
 		return
 	}
@@ -183,7 +190,7 @@ func (c *Controller) processIngressWithRetry(ing *networkingv1.Ingress) {
 			if strings.Contains(err.Error(), "no pods found") ||
 				strings.Contains(err.Error(), "has no node assigned") {
 				// Retry for pod scheduling related errors
-				log.Printf("Retrying ingress %s/%s processing due to: %s",
+				logrus.Debugf("Retrying ingress %s/%s processing due to: %s",
 					ing.Namespace, ing.Name, err.Error())
 				return false, nil
 			}
@@ -195,10 +202,10 @@ func (c *Controller) processIngressWithRetry(ing *networkingv1.Ingress) {
 
 	if err != nil {
 		if err == wait.ErrWaitTimeout {
-			log.Printf("Timeout waiting for ingress %s/%s pods to be ready: %s",
+			logrus.Errorf("Timeout waiting for ingress %s/%s pods to be ready: %s",
 				ing.Namespace, ing.Name, lastErr.Error())
 		} else {
-			log.Printf("Error processing ingress %s/%s: %s",
+			logrus.Errorf("Error processing ingress %s/%s: %s",
 				ing.Namespace, ing.Name, err.Error())
 		}
 	}
@@ -217,7 +224,7 @@ func (c *Controller) processIngressInternal(ing *networkingv1.Ingress) error {
 
 		// Skip if domain is not allowed
 		if !c.config.IsDomainAllowed(rule.Host) {
-			log.Printf("Skipping host %s in ingress %s/%s: domain not allowed by pattern %s",
+			logrus.Debugf("Skipping host %s in ingress %s/%s: domain not allowed by pattern %s",
 				rule.Host, ing.Namespace, ing.Name, c.config.DomainRegex)
 			continue
 		}
@@ -233,7 +240,7 @@ func (c *Controller) processIngressInternal(ing *networkingv1.Ingress) error {
 		// Check if this host already has a different backend
 		if existingBackend, exists := hostBackends[rule.Host]; exists {
 			if existingBackend != backendName {
-				log.Printf("Warning: Host %s already mapped to backend %s, skipping new backend %s",
+				logrus.Debugf("Host %s already mapped to backend %s, skipping new backend %s",
 					rule.Host, existingBackend, backendName)
 			}
 			continue
@@ -340,7 +347,7 @@ func (c *Controller) getZoneIDByDomain(domain string) (string, error) {
 
 		result, err := c.cfAPI.Zones.List(context.Background(), listParams)
 		if err != nil {
-			log.Printf("Error listing zones: %s", err.Error())
+			logrus.Debugf("Error listing zones: %s", err.Error())
 			continue
 		}
 
@@ -382,11 +389,12 @@ func (c *Controller) updateDNSRecord(host, publicIP string) error {
 
 		// Check if record is managed by another controller
 		if strings.HasPrefix(strings.ToLower(record.Comment), "managed by") && record.Comment != config.DNSRecordComment {
-			return fmt.Errorf("DNS record is managed by another controller: %s", record.Comment)
+			logrus.Debugf("DNS record for %s is managed by another controller: %s", host, record.Comment)
+			return nil
 		}
 
 		if record.Content == publicIP {
-			log.Printf("DNS record for %s already points to %s in zone ID %s, skipping update",
+			logrus.Debugf("DNS record for %s already points to %s in zone ID %s, skipping update",
 				host, publicIP, zoneID)
 			return nil
 		}
@@ -408,7 +416,7 @@ func (c *Controller) updateDNSRecord(host, publicIP string) error {
 			return fmt.Errorf("error updating DNS record: %w", err)
 		}
 
-		log.Printf("Successfully updated DNS record for %s from %s to %s in zone ID %s (proxied: %v)",
+		logrus.Infof("Successfully updated DNS record for %s from %s to %s in zone ID %s (proxied: %v)",
 			host, record.Content, publicIP, zoneID, record.Proxied)
 	} else {
 		// Create new record
@@ -428,7 +436,7 @@ func (c *Controller) updateDNSRecord(host, publicIP string) error {
 			return fmt.Errorf("error creating DNS record: %w", err)
 		}
 
-		log.Printf("Successfully created DNS record for %s to %s in zone ID %s (proxied: %v)",
+		logrus.Infof("Successfully created DNS record for %s to %s in zone ID %s (proxied: %v)",
 			host, publicIP, zoneID, c.config.DNSProxied)
 	}
 
