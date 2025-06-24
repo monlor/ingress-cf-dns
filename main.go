@@ -152,6 +152,7 @@ func (c *Controller) watchIngresses() {
 			case watch.Added, watch.Modified:
 				ing := event.Object.(*networkingv1.Ingress)
 				// Process ingress asynchronously to not block the watch
+				logrus.Infof("Processing ingress %s/%s", ing.Namespace, ing.Name)
 				go c.processIngressWithRetry(ing)
 			}
 		}
