@@ -527,8 +527,11 @@ func (c *Controller) deleteDNSRecord(host string) error {
 			return nil
 		}
 		
-		// Delete the record
-		err = c.cfAPI.DNS.Records.Delete(ctx, record.ID)
+		// Delete the record using RecordDeleteParams
+		deleteParams := dns.RecordDeleteParams{
+			ZoneID: cloudflare.F(zoneID),
+		}
+		_, err = c.cfAPI.DNS.Records.Delete(ctx, record.ID, deleteParams)
 		if err != nil {
 			return fmt.Errorf("error deleting DNS record: %w", err)
 		}
