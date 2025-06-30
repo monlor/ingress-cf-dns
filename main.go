@@ -117,8 +117,13 @@ func (c *Controller) Run() {
 func (c *Controller) syncAll() {
 	logrus.Debug("Starting sync...")
 
-	// Get all ingresses from all namespaces
-	ingresses, err := c.kubeClient.NetworkingV1().Ingresses("").List(context.Background(), metav1.ListOptions{})
+	// Build label selector to only get ingresses with DNS management enabled
+	labelSelector := fmt.Sprintf("%s=%s", c.config.IngressLabelKey, c.config.IngressLabelValue)
+	
+	// Get ingresses with DNS management enabled from all namespaces
+	ingresses, err := c.kubeClient.NetworkingV1().Ingresses("").List(context.Background(), metav1.ListOptions{
+		LabelSelector: labelSelector,
+	})
 	if err != nil {
 		logrus.Errorf("Error listing ingresses: %s", err.Error())
 		return
@@ -132,6 +137,7 @@ func (c *Controller) syncAll() {
 				ing.Namespace, ing.Name, c.config.NamespaceRegex)
 			continue
 		}
+		
 		c.processIngressWithRetry(&ing)
 	}
 
@@ -139,8 +145,13 @@ func (c *Controller) syncAll() {
 }
 
 func (c *Controller) watchIngresses() {
+	// Build label selector to only watch ingresses with DNS management enabled
+	labelSelector := fmt.Sprintf("%s=%s", c.config.IngressLabelKey, c.config.IngressLabelValue)
+	
 	for {
-		watcher, err := c.kubeClient.NetworkingV1().Ingresses("").Watch(context.Background(), metav1.ListOptions{})
+		watcher, err := c.kubeClient.NetworkingV1().Ingresses("").Watch(context.Background(), metav1.ListOptions{
+			LabelSelector: labelSelector,
+		})
 		if err != nil {
 			logrus.Errorf("Error watching ingresses: %s", err.Error())
 			time.Sleep(5 * time.Second)
@@ -154,6 +165,11 @@ func (c *Controller) watchIngresses() {
 				// Process ingress asynchronously to not block the watch
 				logrus.Infof("Processing ingress %s/%s", ing.Namespace, ing.Name)
 				go c.processIngressWithRetry(ing)
+			case watch.Deleted:
+				ing := event.Object.(*networkingv1.Ingress)
+				// Process ingress deletion asynchronously to not block the watch
+				logrus.Infof("Processing ingress deletion %s/%s", ing.Namespace, ing.Name)
+				go c.processIngressDeletion(ing)
 			}
 		}
 
@@ -210,6 +226,42 @@ func (c *Controller) processIngressWithRetry(ing *networkingv1.Ingress) {
 				ing.Namespace, ing.Name, err.Error())
 		}
 	}
+}
+
+func (c *Controller) processIngressDeletion(ing *networkingv1.Ingress) {
+	// Skip if namespace is not allowed
+	if !c.config.IsNamespaceAllowed(ing.Namespace) {
+		logrus.Debugf("Skipping ingress deletion %s/%s: namespace not allowed by pattern %s",
+			ing.Namespace, ing.Name, c.config.NamespaceRegex)
+		return
+	}
+
+	// Collect all hosts from the deleted ingress
+	var hostsToDelete []string
+	for _, rule := range ing.Spec.Rules {
+		if rule.Host == "" {
+			continue
+		}
+
+		// Skip if domain is not allowed
+		if !c.config.IsDomainAllowed(rule.Host) {
+			logrus.Debugf("Skipping host %s in deleted ingress %s/%s: domain not allowed by pattern %s",
+				rule.Host, ing.Namespace, ing.Name, c.config.DomainRegex)
+			continue
+		}
+
+		hostsToDelete = append(hostsToDelete, rule.Host)
+	}
+
+	// Delete DNS records for all hosts
+	for _, host := range hostsToDelete {
+		if err := c.deleteDNSRecord(host); err != nil {
+			logrus.Errorf("Error deleting DNS record for %s: %s", host, err.Error())
+		}
+	}
+
+	logrus.Infof("Processed deletion of ingress %s/%s, deleted DNS records for %d hosts",
+		ing.Namespace, ing.Name, len(hostsToDelete))
 }
 
 func (c *Controller) processIngressInternal(ing *networkingv1.Ingress) error {
@@ -439,6 +491,51 @@ func (c *Controller) updateDNSRecord(host, publicIP string) error {
 
 		logrus.Infof("Successfully created DNS record for %s to %s in zone ID %s (proxied: %v)",
 			host, publicIP, zoneID, c.config.DNSProxied)
+	}
+
+	return nil
+}
+
+func (c *Controller) deleteDNSRecord(host string) error {
+	// Get Zone ID for the host
+	zoneID, err := c.getZoneIDByDomain(host)
+	if err != nil {
+		return fmt.Errorf("error getting zone ID: %w", err)
+	}
+
+	ctx := context.Background()
+
+	// Check if record exists
+	listParams := dns.RecordListParams{
+		ZoneID: cloudflare.F(zoneID),
+		Name: cloudflare.F(dns.RecordListParamsName{
+			Exact: cloudflare.F(host),
+		}),
+	}
+
+	records, err := c.cfAPI.DNS.Records.List(ctx, listParams)
+	if err != nil {
+		return fmt.Errorf("error checking DNS record: %w", err)
+	}
+
+	if len(records.Result) > 0 {
+		record := records.Result[0]
+		
+		// Check if record is managed by this controller
+		if record.Comment != config.DNSRecordComment {
+			logrus.Debugf("DNS record for %s is not managed by this controller: %s", host, record.Comment)
+			return nil
+		}
+		
+		// Delete the record
+		err = c.cfAPI.DNS.Records.Delete(ctx, record.ID)
+		if err != nil {
+			return fmt.Errorf("error deleting DNS record: %w", err)
+		}
+
+		logrus.Infof("Successfully deleted DNS record for %s in zone ID %s", host, zoneID)
+	} else {
+		logrus.Debugf("DNS record for %s does not exist in zone ID %s", host, zoneID)
 	}
 
 	return nil

@@ -8,6 +8,10 @@ A Kubernetes controller that automatically updates Cloudflare DNS records to poi
 
 🎯 **Flexible Filtering**: Support regex patterns to filter namespaces and domains
 
+🏷️ **Label-based Control**: Use labels to selectively enable DNS management for specific ingresses
+
+🗑️ **Auto Cleanup**: Automatically deletes DNS records when ingresses are deleted
+
 🔒 **Cloudflare Proxy**: Optional Cloudflare proxy (orange cloud) support
 
 ⚡️ **Real-time Updates**: Only updates DNS records when IP changes
@@ -35,6 +39,8 @@ The controller is configured using environment variables:
 | DNS_PROXIED | Whether to enable Cloudflare's proxy (orange cloud) | true | No |
 | NAMESPACE_REGEX | Regex pattern to filter namespaces | .* | No |
 | DOMAIN_REGEX | Regex pattern to filter domain names | .* | No |
+| INGRESS_LABEL_KEY | Label key to enable DNS management for ingress | ingress-cf-dns.k8s.io/enabled | No |
+| INGRESS_LABEL_VALUE | Label value to enable DNS management for ingress | true | No |
 
 Duration values (like SYNC_INTERVAL_SECONDS) support time units (s, m, h).
 Example: "5m" for 5 minutes, "1h" for 1 hour.
@@ -55,6 +61,40 @@ export DOMAIN_REGEX=".*\\.(example\\.com|example\\.org)$"
 
 # Process specific namespaces
 export NAMESPACE_REGEX="^(prod|staging)$"
+```
+
+### Label-based Control
+
+Use labels to selectively enable DNS management for specific ingresses:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: example-ingress
+  namespace: default
+  labels:
+    ingress-cf-dns.k8s.io/enabled: "true"  # 启用DNS自动管理
+spec:
+  rules:
+  - host: example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: example-service
+            port:
+              number: 80
+```
+
+You can customize the label key and value using environment variables:
+
+```bash
+# 使用自定义的label
+export INGRESS_LABEL_KEY="dns.kubernetes.io/managed"
+export INGRESS_LABEL_VALUE="cloudflare"
 ```
 
 ## Installation
@@ -84,8 +124,8 @@ kubectl apply -f deploy/deployment.yaml
 
 ## How it works
 
-1. The controller periodically scans all ingresses in the cluster (default: every 5 minutes)
-2. For each ingress, it:
+1. The controller watches for Ingress events (Added, Modified, Deleted) in real-time, only monitoring ingresses with the required label
+2. For each ingress event, it:
    - Checks if the ingress namespace matches the NAMESPACE_REGEX pattern
    - Checks if the ingress hosts match the DOMAIN_REGEX pattern
    - Gets the first path's backend service
@@ -95,6 +135,10 @@ kubectl apply -f deploy/deployment.yaml
    - Updates Cloudflare DNS record for the ingress host to point to the node's public IP
    - Only updates the DNS record if the IP address has changed
    - Respects the configured proxy setting (orange/gray cloud) via DNS_PROXIED
+3. When an ingress is deleted:
+   - Automatically deletes the corresponding DNS records from Cloudflare
+   - Only deletes records that were managed by this controller
+4. Periodic sync ensures no ingresses are missed and handles any reconciliation needed
 
 ## Node Configuration
 
@@ -108,4 +152,5 @@ kubectl annotate node <node-name> node.kubernetes.io/public-ip=<public-ip-addres
 - Each node must have its public IP configured as an annotation
 - Only the first path's backend service of each ingress rule is considered
 - Only the first pod of each service is used for DNS record
-- One-to-one mapping between hosts and backends is enforced 
+- One-to-one mapping between hosts and backends is enforced
+- DNS records are only managed for ingresses with the required label 

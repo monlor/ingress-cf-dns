@@ -23,6 +23,10 @@ type Config struct {
 	// Filter configuration
 	NamespaceRegex string `env:"NAMESPACE_REGEX" envDefault:".*" envDescription:"Regex pattern to filter namespaces"`
 	DomainRegex    string `env:"DOMAIN_REGEX" envDefault:".*" envDescription:"Regex pattern to filter domain names"`
+	
+	// Ingress label filter configuration
+	IngressLabelKey   string `env:"INGRESS_LABEL_KEY" envDefault:"ingress-cf-dns.k8s.io/enabled" envDescription:"Label key to enable DNS management for ingress"`
+	IngressLabelValue string `env:"INGRESS_LABEL_VALUE" envDefault:"true" envDescription:"Label value to enable DNS management for ingress"`
 
 	// Compiled regex patterns (not from env)
 	namespacePattern *regexp.Regexp
@@ -65,4 +69,14 @@ func (c *Config) IsNamespaceAllowed(namespace string) bool {
 func (c *Config) IsDomainAllowed(domain string) bool {
 	match, _ := c.domainPattern.MatchString(domain)
 	return match
+}
+
+// IsIngressDNSEnabled checks if an ingress has the required label to enable DNS management
+func (c *Config) IsIngressDNSEnabled(labels map[string]string) bool {
+	if labels == nil {
+		return false
+	}
+	
+	value, exists := labels[c.IngressLabelKey]
+	return exists && value == c.IngressLabelValue
 }
