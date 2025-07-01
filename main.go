@@ -351,7 +351,9 @@ func (c *Controller) processIngressInternal(ing *networkingv1.Ingress) error {
 
 		// Update DNS records for all hosts of this backend
 		for _, host := range hosts {
-			if err := c.updateDNSRecord(host, publicIP); err != nil {
+			// Get proxied value from ingress annotations, default to global config
+			proxied := c.config.GetIngressProxiedValue(ing.Annotations)
+			if err := c.updateDNSRecord(host, publicIP, proxied); err != nil {
 				return fmt.Errorf("error updating DNS record for %s: %w", host, err)
 			}
 		}
@@ -414,7 +416,7 @@ func (c *Controller) getZoneIDByDomain(domain string) (string, error) {
 	return "", fmt.Errorf("no matching zone found for domain: %s", domain)
 }
 
-func (c *Controller) updateDNSRecord(host, publicIP string) error {
+func (c *Controller) updateDNSRecord(host, publicIP string, proxied bool) error {
 	// Get Zone ID for the host
 	zoneID, err := c.getZoneIDByDomain(host)
 	if err != nil {
@@ -459,7 +461,7 @@ func (c *Controller) updateDNSRecord(host, publicIP string) error {
 				Name:    cloudflare.F(host),
 				Type:    cloudflare.F(dns.ARecordTypeA),
 				Content: cloudflare.F(publicIP),
-				Proxied: cloudflare.F(record.Proxied),
+				Proxied: cloudflare.F(proxied),
 				TTL:     cloudflare.F(dns.TTL1),
 				Comment: cloudflare.F(config.DNSRecordComment),
 			},
@@ -470,7 +472,7 @@ func (c *Controller) updateDNSRecord(host, publicIP string) error {
 		}
 
 		logrus.Infof("Successfully updated DNS record for %s from %s to %s in zone ID %s (proxied: %v)",
-			host, record.Content, publicIP, zoneID, record.Proxied)
+			host, record.Content, publicIP, zoneID, proxied)
 	} else {
 		// Create new record
 		newParams := dns.RecordNewParams{
@@ -479,7 +481,7 @@ func (c *Controller) updateDNSRecord(host, publicIP string) error {
 				Name:    cloudflare.F(host),
 				Type:    cloudflare.F(dns.ARecordTypeA),
 				Content: cloudflare.F(publicIP),
-				Proxied: cloudflare.F(c.config.DNSProxied),
+				Proxied: cloudflare.F(proxied),
 				TTL:     cloudflare.F(dns.TTL1),
 				Comment: cloudflare.F(config.DNSRecordComment),
 			},
@@ -490,7 +492,7 @@ func (c *Controller) updateDNSRecord(host, publicIP string) error {
 		}
 
 		logrus.Infof("Successfully created DNS record for %s to %s in zone ID %s (proxied: %v)",
-			host, publicIP, zoneID, c.config.DNSProxied)
+			host, publicIP, zoneID, proxied)
 	}
 
 	return nil

@@ -41,6 +41,7 @@ The controller is configured using environment variables:
 | DOMAIN_REGEX | Regex pattern to filter domain names | .* | No |
 | INGRESS_LABEL_KEY | Label key to enable DNS management for ingress | ingress-cf-dns.k8s.io/enabled | No |
 | INGRESS_LABEL_VALUE | Label value to enable DNS management for ingress | true | No |
+| INGRESS_PROXIED_ANNOTATION | Annotation key to control DNS record proxied status | ingress-cf-dns.k8s.io/proxied | No |
 
 Duration values (like SYNC_INTERVAL_SECONDS) support time units (s, m, h).
 Example: "5m" for 5 minutes, "1h" for 1 hour.
@@ -75,6 +76,8 @@ metadata:
   namespace: default
   labels:
     ingress-cf-dns.k8s.io/enabled: "true"  # 启用DNS自动管理
+  annotations:
+    ingress-cf-dns.k8s.io/proxied: "true"  # 启用Cloudflare代理（橙色云朵）
 spec:
   rules:
   - host: example.com
@@ -95,7 +98,67 @@ You can customize the label key and value using environment variables:
 # 使用自定义的label
 export INGRESS_LABEL_KEY="dns.kubernetes.io/managed"
 export INGRESS_LABEL_VALUE="cloudflare"
+
+# 使用自定义的proxied注解
+export INGRESS_PROXIED_ANNOTATION="dns.kubernetes.io/proxied"
 ```
+
+### Proxied Annotation Control
+
+Use annotations to control whether DNS records use Cloudflare's proxy service (orange cloud):
+
+```yaml
+# 启用Cloudflare代理（橙色云朵）
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: example-ingress-proxied
+  namespace: default
+  labels:
+    ingress-cf-dns.k8s.io/enabled: "true"
+  annotations:
+    ingress-cf-dns.k8s.io/proxied: "true"  # 启用代理
+spec:
+  rules:
+  - host: example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: example-service
+            port:
+              number: 80
+---
+# 禁用Cloudflare代理（灰色云朵）
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: example-ingress-no-proxy
+  namespace: default
+  labels:
+    ingress-cf-dns.k8s.io/enabled: "true"
+  annotations:
+    ingress-cf-dns.k8s.io/proxied: "false"  # 禁用代理
+spec:
+  rules:
+  - host: api.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: api-service
+            port:
+              number: 80
+```
+
+Supported proxied values:
+- `"true"`, `"1"`, `"yes"`, `"on"` - Enable Cloudflare proxy (orange cloud)
+- `"false"`, `"0"`, `"no"`, `"off"` - Disable Cloudflare proxy (gray cloud)
+- Any other value or missing annotation - Default to `true` (enabled)
 
 ## Installation
 

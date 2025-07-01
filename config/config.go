@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"time"
 
 	"github.com/caarlos0/env/v10"
@@ -27,6 +28,9 @@ type Config struct {
 	// Ingress label filter configuration
 	IngressLabelKey   string `env:"INGRESS_LABEL_KEY" envDefault:"ingress-cf-dns.k8s.io/enabled" envDescription:"Label key to enable DNS management for ingress"`
 	IngressLabelValue string `env:"INGRESS_LABEL_VALUE" envDefault:"true" envDescription:"Label value to enable DNS management for ingress"`
+
+	// Ingress annotation configuration
+	IngressProxiedAnnotation string `env:"INGRESS_PROXIED_ANNOTATION" envDefault:"ingress-cf-dns.k8s.io/proxied" envDescription:"Annotation key to control DNS record proxied status"`
 
 	// Compiled regex patterns (not from env)
 	namespacePattern *regexp.Regexp
@@ -79,4 +83,27 @@ func (c *Config) IsIngressDNSEnabled(labels map[string]string) bool {
 	
 	value, exists := labels[c.IngressLabelKey]
 	return exists && value == c.IngressLabelValue
+}
+
+// GetIngressProxiedValue gets the proxied value from ingress annotations, defaults to true
+func (c *Config) GetIngressProxiedValue(annotations map[string]string) bool {
+	if annotations == nil {
+		return true // 默认值为true
+	}
+	
+	value, exists := annotations[c.IngressProxiedAnnotation]
+	if !exists {
+		return true // 默认值为true
+	}
+	
+	// 解析字符串值为布尔值
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "true", "1", "yes", "on":
+		return true
+	case "false", "0", "no", "off":
+		return false
+	default:
+		// 如果值无法解析，返回默认值true
+		return true
+	}
 }

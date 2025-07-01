@@ -7,6 +7,7 @@ metadata:
     ingress-cf-dns.k8s.io/enabled: "true"  # 启用DNS自动管理
   annotations:
     kubernetes.io/ingress.class: "nginx"
+    ingress-cf-dns.k8s.io/proxied: "true"  # 启用Cloudflare代理（橙色云朵）
 spec:
   rules:
   - host: example.com
@@ -27,6 +28,30 @@ spec:
         backend:
           service:
             name: example-service
+            port:
+              number: 80
+---
+# 不启用Cloudflare代理的Ingress示例
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: example-ingress-no-proxy
+  namespace: default
+  labels:
+    ingress-cf-dns.k8s.io/enabled: "true"  # 启用DNS自动管理
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    ingress-cf-dns.k8s.io/proxied: "false"  # 禁用Cloudflare代理（灰色云朵）
+spec:
+  rules:
+  - host: api.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: api-service
             port:
               number: 80
 ---
