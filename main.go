@@ -18,9 +18,10 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/apimachinery/pkg/watch"
+	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
 
 	logrus "github.com/sirupsen/logrus"
@@ -152,40 +153,109 @@ func (c *Controller) syncAll() {
 }
 
 func (c *Controller) watchIngresses() {
-	// Build label selector to only watch ingresses with DNS management enabled
+	// Create informer factory with label selector
 	labelSelector := fmt.Sprintf("%s=%s", c.config.IngressLabelKey, c.config.IngressLabelValue)
-	
-	for {
-		watcher, err := c.kubeClient.NetworkingV1().Ingresses("").Watch(context.Background(), metav1.ListOptions{
-			LabelSelector: labelSelector,
-		})
-		if err != nil {
-			logrus.Errorf("Error watching ingresses: %s", err.Error())
-			time.Sleep(5 * time.Second)
+
+	informerFactory := informers.NewSharedInformerFactoryWithOptions(
+		c.kubeClient,
+		c.config.SyncInterval,
+		informers.WithNamespace(metav1.NamespaceAll),
+		informers.WithTweakListOptions(func(options *metav1.ListOptions) {
+			options.LabelSelector = labelSelector
+		}),
+	)
+
+	ingressInformer := informerFactory.Networking().V1().Ingresses().Informer()
+
+	// Register event handlers
+	ingressInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			ing := obj.(*networkingv1.Ingress)
+			logrus.Infof("Ingress added: %s/%s", ing.Namespace, ing.Name)
+			go c.processIngressWithRetry(ing)
+		},
+		UpdateFunc: func(oldObj, newObj interface{}) {
+			oldIng := oldObj.(*networkingv1.Ingress)
+			newIng := newObj.(*networkingv1.Ingress)
+			logrus.Infof("Ingress updated: %s/%s", newIng.Namespace, newIng.Name)
+			go c.processIngressUpdate(oldIng, newIng)
+		},
+		DeleteFunc: func(obj interface{}) {
+			ing := obj.(*networkingv1.Ingress)
+			logrus.Infof("Ingress deleted: %s/%s", ing.Namespace, ing.Name)
+			go c.processIngressDeletion(ing)
+		},
+	})
+
+	// Start informer
+	informerFactory.Start(c.stopCh)
+
+	// Wait for cache sync
+	if !cache.WaitForCacheSync(c.stopCh, ingressInformer.HasSynced) {
+		logrus.Error("Failed to sync informer cache")
+		return
+	}
+
+	logrus.Info("Informer cache synced successfully")
+
+	<-c.stopCh
+}
+
+// extractIngressHosts extracts all hosts from an Ingress
+func (c *Controller) extractIngressHosts(ing *networkingv1.Ingress) map[string]bool {
+	hosts := make(map[string]bool)
+
+	for _, rule := range ing.Spec.Rules {
+		if rule.Host == "" {
 			continue
 		}
 
-		for event := range watcher.ResultChan() {
-			switch event.Type {
-			case watch.Added, watch.Modified:
-				ing := event.Object.(*networkingv1.Ingress)
-				// Process ingress asynchronously to not block the watch
-				logrus.Infof("Processing ingress %s/%s", ing.Namespace, ing.Name)
-				go c.processIngressWithRetry(ing)
-			case watch.Deleted:
-				ing := event.Object.(*networkingv1.Ingress)
-				// Process ingress deletion asynchronously to not block the watch
-				logrus.Infof("Processing ingress deletion %s/%s", ing.Namespace, ing.Name)
-				go c.processIngressDeletion(ing)
-			}
+		// Check if domain is allowed
+		if !c.config.IsDomainAllowed(rule.Host) {
+			continue
 		}
 
-		select {
-		case <-c.stopCh:
-			return
-		default:
-			// Reconnect the watcher if it was closed
-			time.Sleep(1 * time.Second)
+		hosts[rule.Host] = true
+	}
+
+	return hosts
+}
+
+// processIngressUpdate handles Ingress updates by comparing old and new hosts
+func (c *Controller) processIngressUpdate(oldIng, newIng *networkingv1.Ingress) {
+	// Skip if namespace is not allowed
+	if !c.config.IsNamespaceAllowed(newIng.Namespace) {
+		logrus.Warnf("Skipping ingress update %s/%s: namespace not allowed by pattern %s",
+			newIng.Namespace, newIng.Name, c.config.NamespaceRegex)
+		return
+	}
+
+	// Extract hosts from old and new Ingress
+	oldHosts := c.extractIngressHosts(oldIng)
+	newHosts := c.extractIngressHosts(newIng)
+
+	// Find hosts that were removed (in old but not in new)
+	removedHosts := make([]string, 0)
+	for host := range oldHosts {
+		if !newHosts[host] {
+			removedHosts = append(removedHosts, host)
+		}
+	}
+
+	// Process the new Ingress (will create/update DNS records)
+	c.processIngressWithRetry(newIng)
+
+	// Delete DNS records for removed hosts
+	if len(removedHosts) > 0 {
+		logrus.Infof("Deleting DNS records for %d removed hosts from ingress %s/%s",
+			len(removedHosts), newIng.Namespace, newIng.Name)
+
+		for _, host := range removedHosts {
+			if err := c.deleteDNSRecord(host); err != nil {
+				logrus.Errorf("Error deleting DNS record for %s: %s", host, err.Error())
+			} else {
+				logrus.Infof("Successfully deleted DNS record for removed host: %s", host)
+			}
 		}
 	}
 }
@@ -272,18 +342,9 @@ func (c *Controller) processIngressDeletion(ing *networkingv1.Ingress) {
 }
 
 func (c *Controller) processIngressInternal(ing *networkingv1.Ingress) error {
-	// Get existing DNS records for this Ingress
-	existingRecords, err := c.getIngressDNSRecords(ing.Namespace, ing.Name)
-	if err != nil {
-		logrus.Warnf("Error getting existing DNS records for ingress %s/%s: %s",
-			ing.Namespace, ing.Name, err.Error())
-		existingRecords = make(map[string]DNSRecordInfo)
-	}
-
 	// Map to track host to backend mapping
 	hostBackends := make(map[string]string)
 	backendHosts := make(map[string][]string)
-	processedHosts := make(map[string]bool)
 
 	// First pass: collect and validate host-backend mappings
 	for _, rule := range ing.Spec.Rules {
@@ -371,19 +432,6 @@ func (c *Controller) processIngressInternal(ing *networkingv1.Ingress) error {
 			proxied := c.config.GetIngressProxiedValue(ing.Annotations)
 			if err := c.updateDNSRecord(host, publicIP, proxied, ing.Namespace, ing.Name); err != nil {
 				return fmt.Errorf("error updating DNS record for %s: %w", host, err)
-			}
-			processedHosts[host] = true
-		}
-	}
-
-	// Delete DNS records for hosts that are no longer in the Ingress
-	for host, record := range existingRecords {
-		if !processedHosts[host] {
-			if err := c.deleteDNSRecordByID(record.ID, host); err != nil {
-				logrus.Errorf("Error deleting old DNS record for %s: %s", host, err.Error())
-			} else {
-				logrus.Infof("Deleted old DNS record for %s (no longer in ingress %s/%s)",
-					host, ing.Namespace, ing.Name)
 			}
 		}
 	}
