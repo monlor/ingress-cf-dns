@@ -33,6 +33,13 @@ type Controller struct {
 	stopCh     chan struct{}
 }
 
+// DNSRecordInfo holds minimal information about a DNS record
+type DNSRecordInfo struct {
+	ID      string
+	Name    string
+	Comment string
+}
+
 func main() {
 	// 初始化logrus
 	logrus.SetFormatter(&logrus.TextFormatter{
@@ -265,9 +272,18 @@ func (c *Controller) processIngressDeletion(ing *networkingv1.Ingress) {
 }
 
 func (c *Controller) processIngressInternal(ing *networkingv1.Ingress) error {
+	// Get existing DNS records for this Ingress
+	existingRecords, err := c.getIngressDNSRecords(ing.Namespace, ing.Name)
+	if err != nil {
+		logrus.Warnf("Error getting existing DNS records for ingress %s/%s: %s",
+			ing.Namespace, ing.Name, err.Error())
+		existingRecords = make(map[string]DNSRecordInfo)
+	}
+
 	// Map to track host to backend mapping
 	hostBackends := make(map[string]string)
 	backendHosts := make(map[string][]string)
+	processedHosts := make(map[string]bool)
 
 	// First pass: collect and validate host-backend mappings
 	for _, rule := range ing.Spec.Rules {
@@ -353,8 +369,21 @@ func (c *Controller) processIngressInternal(ing *networkingv1.Ingress) error {
 		for _, host := range hosts {
 			// Get proxied value from ingress annotations, default to global config
 			proxied := c.config.GetIngressProxiedValue(ing.Annotations)
-			if err := c.updateDNSRecord(host, publicIP, proxied); err != nil {
+			if err := c.updateDNSRecord(host, publicIP, proxied, ing.Namespace, ing.Name); err != nil {
 				return fmt.Errorf("error updating DNS record for %s: %w", host, err)
+			}
+			processedHosts[host] = true
+		}
+	}
+
+	// Delete DNS records for hosts that are no longer in the Ingress
+	for host, record := range existingRecords {
+		if !processedHosts[host] {
+			if err := c.deleteDNSRecordByID(record.ID, host); err != nil {
+				logrus.Errorf("Error deleting old DNS record for %s: %s", host, err.Error())
+			} else {
+				logrus.Infof("Deleted old DNS record for %s (no longer in ingress %s/%s)",
+					host, ing.Namespace, ing.Name)
 			}
 		}
 	}
@@ -416,7 +445,7 @@ func (c *Controller) getZoneIDByDomain(domain string) (string, error) {
 	return "", fmt.Errorf("no matching zone found for domain: %s", domain)
 }
 
-func (c *Controller) updateDNSRecord(host, publicIP string, proxied bool) error {
+func (c *Controller) updateDNSRecord(host, publicIP string, proxied bool, namespace, name string) error {
 	// Get Zone ID for the host
 	zoneID, err := c.getZoneIDByDomain(host)
 	if err != nil {
@@ -424,6 +453,7 @@ func (c *Controller) updateDNSRecord(host, publicIP string, proxied bool) error 
 	}
 
 	ctx := context.Background()
+	dnsComment := config.GetDNSRecordComment(namespace, name)
 
 	// Check if record exists
 	listParams := dns.RecordListParams{
@@ -442,13 +472,18 @@ func (c *Controller) updateDNSRecord(host, publicIP string, proxied bool) error 
 		// Check if update is needed
 		record := records.Result[0]
 
-		// Check if record is managed by another controller
-		if strings.HasPrefix(strings.ToLower(record.Comment), "managed by") && record.Comment != config.DNSRecordComment {
-			logrus.Debugf("DNS record for %s is managed by another controller: %s", host, record.Comment)
+		// Check if record is managed by another controller or ingress
+		if strings.HasPrefix(strings.ToLower(record.Comment), "managed by") && record.Comment != dnsComment {
+			// Check if it's managed by this controller but different ingress
+			if strings.HasPrefix(record.Comment, config.DNSRecordCommentPrefix) {
+				logrus.Warnf("DNS record for %s is managed by another ingress: %s", host, record.Comment)
+			} else {
+				logrus.Debugf("DNS record for %s is managed by another controller: %s", host, record.Comment)
+			}
 			return nil
 		}
 
-		if record.Content == publicIP {
+		if record.Content == publicIP && record.Comment == dnsComment {
 			logrus.Debugf("DNS record for %s already points to %s in zone ID %s, skipping update",
 				host, publicIP, zoneID)
 			return nil
@@ -463,7 +498,7 @@ func (c *Controller) updateDNSRecord(host, publicIP string, proxied bool) error 
 				Content: cloudflare.F(publicIP),
 				Proxied: cloudflare.F(proxied),
 				TTL:     cloudflare.F(dns.TTL1),
-				Comment: cloudflare.F(config.DNSRecordComment),
+				Comment: cloudflare.F(dnsComment),
 			},
 		}
 		_, err = c.cfAPI.DNS.Records.Update(ctx, record.ID, updateParams)
@@ -483,7 +518,7 @@ func (c *Controller) updateDNSRecord(host, publicIP string, proxied bool) error 
 				Content: cloudflare.F(publicIP),
 				Proxied: cloudflare.F(proxied),
 				TTL:     cloudflare.F(dns.TTL1),
-				Comment: cloudflare.F(config.DNSRecordComment),
+				Comment: cloudflare.F(dnsComment),
 			},
 		}
 		_, err = c.cfAPI.DNS.Records.New(ctx, newParams)
@@ -496,6 +531,51 @@ func (c *Controller) updateDNSRecord(host, publicIP string, proxied bool) error 
 	}
 
 	return nil
+}
+
+// getIngressDNSRecords returns all DNS records managed by a specific Ingress
+func (c *Controller) getIngressDNSRecords(namespace, name string) (map[string]DNSRecordInfo, error) {
+	ctx := context.Background()
+	records := make(map[string]DNSRecordInfo)
+	expectedComment := config.GetDNSRecordComment(namespace, name)
+
+	// Get all zones to search for records
+	listParams := zones.ZoneListParams{
+		Status:    cloudflare.F(zones.ZoneListParamsStatusActive),
+		PerPage:   cloudflare.F(50.0),
+		Direction: cloudflare.F(zones.ZoneListParamsDirectionAsc),
+	}
+
+	zoneResult, err := c.cfAPI.Zones.List(ctx, listParams)
+	if err != nil {
+		return nil, fmt.Errorf("error listing zones: %w", err)
+	}
+
+	// Search for DNS records in each zone
+	for _, zone := range zoneResult.Result {
+		recordListParams := dns.RecordListParams{
+			ZoneID: cloudflare.F(zone.ID),
+		}
+
+		dnsRecords, err := c.cfAPI.DNS.Records.List(ctx, recordListParams)
+		if err != nil {
+			logrus.Debugf("Error listing DNS records in zone %s: %s", zone.Name, err.Error())
+			continue
+		}
+
+		for _, record := range dnsRecords.Result {
+			// Check if this record is managed by the specified Ingress
+			if record.Comment == expectedComment {
+				records[record.Name] = DNSRecordInfo{
+					ID:      record.ID,
+					Name:    record.Name,
+					Comment: record.Comment,
+				}
+			}
+		}
+	}
+
+	return records, nil
 }
 
 func (c *Controller) deleteDNSRecord(host string) error {
@@ -522,13 +602,13 @@ func (c *Controller) deleteDNSRecord(host string) error {
 
 	if len(records.Result) > 0 {
 		record := records.Result[0]
-		
+
 		// Check if record is managed by this controller
-		if record.Comment != config.DNSRecordComment {
+		if !strings.HasPrefix(record.Comment, config.DNSRecordCommentPrefix) {
 			logrus.Debugf("DNS record for %s is not managed by this controller: %s", host, record.Comment)
 			return nil
 		}
-		
+
 		// Delete the record using RecordDeleteParams
 		deleteParams := dns.RecordDeleteParams{
 			ZoneID: cloudflare.F(zoneID),
@@ -543,5 +623,28 @@ func (c *Controller) deleteDNSRecord(host string) error {
 		logrus.Debugf("DNS record for %s does not exist in zone ID %s", host, zoneID)
 	}
 
+	return nil
+}
+
+// deleteDNSRecordByID deletes a DNS record by its ID
+func (c *Controller) deleteDNSRecordByID(recordID, host string) error {
+	// Get Zone ID for the host
+	zoneID, err := c.getZoneIDByDomain(host)
+	if err != nil {
+		return fmt.Errorf("error getting zone ID: %w", err)
+	}
+
+	ctx := context.Background()
+
+	// Delete the record using RecordDeleteParams
+	deleteParams := dns.RecordDeleteParams{
+		ZoneID: cloudflare.F(zoneID),
+	}
+	_, err = c.cfAPI.DNS.Records.Delete(ctx, recordID, deleteParams)
+	if err != nil {
+		return fmt.Errorf("error deleting DNS record: %w", err)
+	}
+
+	logrus.Infof("Successfully deleted DNS record for %s (ID: %s) in zone ID %s", host, recordID, zoneID)
 	return nil
 }

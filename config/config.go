@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -38,8 +39,34 @@ type Config struct {
 }
 
 const (
-	DNSRecordComment = "managed by Ingress-CF-DNS"
+	DNSRecordCommentPrefix = "managed by Ingress-CF-DNS"
 )
+
+// GetDNSRecordComment generates a comment for DNS records with Ingress identification
+func GetDNSRecordComment(namespace, name string) string {
+	return fmt.Sprintf("%s: %s/%s", DNSRecordCommentPrefix, namespace, name)
+}
+
+// ParseDNSRecordComment parses a DNS record comment to extract namespace and name
+func ParseDNSRecordComment(comment string) (namespace, name string, ok bool) {
+	if !strings.HasPrefix(comment, DNSRecordCommentPrefix) {
+		return "", "", false
+	}
+
+	// Extract "namespace/name" part after ": "
+	parts := strings.SplitN(comment, ": ", 2)
+	if len(parts) != 2 {
+		return "", "", false
+	}
+
+	// Split namespace/name
+	nsParts := strings.SplitN(parts[1], "/", 2)
+	if len(nsParts) != 2 {
+		return "", "", false
+	}
+
+	return nsParts[0], nsParts[1], true
+}
 
 // LoadConfig loads configuration from environment variables
 func LoadConfig() (*Config, error) {
